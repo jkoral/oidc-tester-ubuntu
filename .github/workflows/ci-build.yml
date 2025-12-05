@@ -30,16 +30,15 @@ jobs:
     - name: Package application
       run: |
         cd ${{github.workspace}}/build
-        mkdir -p oidc-tester-linux
-        cp oidc-tester oidc-tester-linux/
-        cp ${{github.workspace}}/README.md oidc-tester-linux/
-        cp ${{github.workspace}}/QUICKSTART.md oidc-tester-linux/
-        tar -czf oidc-tester-linux.tar.gz oidc-tester-linux/
+        mkdir -p oidc-tester-ubuntu
+        cp oidc-tester oidc-tester-ubuntu/
+        cp ${{github.workspace}}/README.md oidc-tester-ubuntu/
+        cp ${{github.workspace}}/QUICKSTART.md oidc-tester-ubuntu/
 
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:
-        name: oidc-tester-linux
-        path: ${{github.workspace}}/build/oidc-tester-linux.tar.gz
+        name: oidc-tester-ubuntu
+        path: ${{github.workspace}}/build/oidc-tester-ubuntu/
         retention-days: 90
 
