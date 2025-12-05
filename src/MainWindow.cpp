@@ -18,7 +18,7 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setupUI();
     loadSettings();
-    
+
     // Connect OIDC manager signals
     connect(m_oidcManager, &OIDCManager::progressUpdated, this, &MainWindow::onProgressUpdated);
     connect(m_oidcManager, &OIDCManager::errorOccurred, this, &MainWindow::onErrorOccurred);
@@ -552,10 +552,11 @@ void MainWindow::createLogsTab()
     logsGroup->setLayout(logsLayout);
     contentLayout->addWidget(logsGroup);
 
-    m_logsContentWidget->hide();
-
     mainLayout->addWidget(m_logsEmptyWidget);
     mainLayout->addWidget(m_logsContentWidget);
+
+    // Initially hide content widget, show empty widget
+    m_logsContentWidget->hide();
 
     m_tabWidget->addTab(logsTab, "📄 Logs");
 }
@@ -666,8 +667,8 @@ void MainWindow::onLogMessage(const QString& message)
     m_logsList->addItem("● " + message);
     m_logsList->scrollToBottom();
 
-    // Show logs content
-    if (m_logsEmptyWidget->isVisible()) {
+    // Show logs content on first message
+    if (m_logsEmptyWidget->isVisible() || !m_logsContentWidget->isVisible()) {
         m_logsEmptyWidget->hide();
         m_logsContentWidget->show();
     }
