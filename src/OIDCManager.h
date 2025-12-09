@@ -24,7 +24,9 @@ public:
                             const QString& loginHint,
                             bool promptLogin,
                             const QString& responseType,
-                            const QString& extraParams);
+                            const QString& extraParams,
+                            bool skipStateValidation = false,
+                            bool disablePKCE = false);
     
     void cancelAuthentication();
 
@@ -64,7 +66,9 @@ private:
     QString m_state;
     QString m_codeVerifier;
     QString m_codeChallenge;
-    
+    bool m_skipStateValidation;
+    bool m_disablePKCE;
+
     static const int CALLBACK_PORT = 8080;
 };
 

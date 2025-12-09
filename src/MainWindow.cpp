@@ -9,6 +9,8 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QPalette>
+#include <QGuiApplication>
+#include <QClipboard>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -34,8 +36,8 @@ MainWindow::~MainWindow()
 void MainWindow::setupUI()
 {
     setWindowTitle("OIDC Tester");
-    setMinimumSize(900, 700);
-    resize(1000, 800);
+    setMinimumSize(1000, 850);
+    resize(1100, 900);
     
     // Set background gradient (approximation using stylesheet)
     setStyleSheet(
@@ -127,7 +129,19 @@ void MainWindow::createConfigTab()
     
     m_promptLoginCheck = new QCheckBox("Prompt for login");
     oidcLayout->addRow("Authentication Prompt:", m_promptLoginCheck);
-    
+
+    m_skipStateValidationCheck = new QCheckBox("Skip state validation (for testing/demo only)");
+    m_skipStateValidationCheck->setStyleSheet("QCheckBox { color: #FF9500; }");
+
+    m_disablePKCECheck = new QCheckBox("Disable PKCE (for native messaging host compatibility)");
+    m_disablePKCECheck->setStyleSheet("QCheckBox { color: #FF9500; }");
+
+    QVBoxLayout* securityLayout = new QVBoxLayout();
+    securityLayout->addWidget(m_skipStateValidationCheck);
+    securityLayout->addWidget(m_disablePKCECheck);
+    securityLayout->setSpacing(4);
+    oidcLayout->addRow("Security:", securityLayout);
+
     m_redirectURILabel = new QLabel("http://localhost:8080/callback");
     m_redirectURILabel->setStyleSheet("QLabel { background-color: rgba(128, 128, 128, 0.1); "
                                      "border: 1px solid rgba(128, 128, 128, 0.3); "
@@ -140,10 +154,17 @@ void MainWindow::createConfigTab()
     m_scopesEdit->setText("openid profile email");
     oidcLayout->addRow("Scopes:", m_scopesEdit);
 
-    m_responseTypeEdit = new QLineEdit();
-    m_responseTypeEdit->setPlaceholderText("code");
-    m_responseTypeEdit->setText("code");
-    oidcLayout->addRow("Response Type:", m_responseTypeEdit);
+    m_responseTypeCombo = new QComboBox();
+    m_responseTypeCombo->addItems({"code (Authorization Code Flow)", "id_token token (Implicit Flow)", "code id_token token (Hybrid Flow)"});
+    m_responseTypeCombo->setCurrentIndex(0);
+    QLabel* responseTypeHelp = new QLabel("Use 'Implicit Flow' if your native messaging host interferes with code exchange");
+    responseTypeHelp->setStyleSheet("QLabel { color: #888888; font-size: 10px; font-style: italic; }");
+    responseTypeHelp->setWordWrap(true);
+    QVBoxLayout* responseTypeLayout = new QVBoxLayout();
+    responseTypeLayout->addWidget(m_responseTypeCombo);
+    responseTypeLayout->addWidget(responseTypeHelp);
+    responseTypeLayout->setSpacing(4);
+    oidcLayout->addRow("Response Type:", responseTypeLayout);
 
     m_extraParamsEdit = new QLineEdit();
     m_extraParamsEdit->setPlaceholderText("key1=value1&key2=value2");
@@ -547,7 +568,22 @@ void MainWindow::createLogsTab()
                              "border-radius: 6px; padding: 8px; }"
                              "QListWidget::item { background-color: rgba(255, 255, 255, 0.3); "
                              "border-radius: 6px; padding: 6px 12px; margin: 3px; }");
+    m_logsList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     logsLayout->addWidget(m_logsList);
+
+    // Copy button
+    QPushButton* copyLogsButton = new QPushButton("📋 Copy All Logs");
+    copyLogsButton->setStyleSheet("QPushButton { background-color: #AF52DE; color: white; "
+                                 "border-radius: 6px; padding: 8px 16px; font-weight: bold; }"
+                                 "QPushButton:hover { background-color: #8E44AD; }");
+    connect(copyLogsButton, &QPushButton::clicked, this, [this]() {
+        QStringList allLogs;
+        for (int i = 0; i < m_logsList->count(); ++i) {
+            allLogs.append(m_logsList->item(i)->text());
+        }
+        QGuiApplication::clipboard()->setText(allLogs.join("\n"));
+    });
+    logsLayout->addWidget(copyLogsButton);
 
     logsGroup->setLayout(logsLayout);
     contentLayout->addWidget(logsGroup);
@@ -589,6 +625,9 @@ void MainWindow::onBeginAuthentication()
     m_beginAuthButton->setEnabled(false);
     m_authBeginButton->setEnabled(false);
 
+    // Extract response type from combo box (e.g., "code" from "code (Authorization Code Flow)")
+    QString responseType = m_responseTypeCombo->currentText().split(" ").first();
+
     // Start authentication
     m_oidcManager->startAuthentication(
         m_issuerURLEdit->text().trimmed(),
@@ -598,8 +637,10 @@ void MainWindow::onBeginAuthentication()
         m_acrValueCombo->currentText(),
         m_loginHintEdit->text().trimmed(),
         m_promptLoginCheck->isChecked(),
-        m_responseTypeEdit->text().trimmed(),
-        m_extraParamsEdit->text().trimmed()
+        responseType,
+        m_extraParamsEdit->text().trimmed(),
+        m_skipStateValidationCheck->isChecked(),
+        m_disablePKCECheck->isChecked()
     );
 }
 
@@ -714,8 +755,19 @@ void MainWindow::loadSettings()
     m_acrValueCombo->setCurrentText(settings.value("acrValue", "None").toString());
     m_loginHintEdit->setText(settings.value("loginHint", "").toString());
     m_promptLoginCheck->setChecked(settings.value("promptLogin", false).toBool());
+    m_skipStateValidationCheck->setChecked(settings.value("skipStateValidation", false).toBool());
+    m_disablePKCECheck->setChecked(settings.value("disablePKCE", false).toBool());
     m_scopesEdit->setText(settings.value("scopes", "openid profile email").toString());
-    m_responseTypeEdit->setText(settings.value("responseType", "code").toString());
+
+    // Load response type and find matching combo item
+    QString savedResponseType = settings.value("responseType", "code").toString();
+    for (int i = 0; i < m_responseTypeCombo->count(); ++i) {
+        if (m_responseTypeCombo->itemText(i).startsWith(savedResponseType + " ")) {
+            m_responseTypeCombo->setCurrentIndex(i);
+            break;
+        }
+    }
+
     m_extraParamsEdit->setText(settings.value("extraParams", "").toString());
 }
 
@@ -729,8 +781,14 @@ void MainWindow::saveSettings()
     settings.setValue("acrValue", m_acrValueCombo->currentText());
     settings.setValue("loginHint", m_loginHintEdit->text());
     settings.setValue("promptLogin", m_promptLoginCheck->isChecked());
+    settings.setValue("skipStateValidation", m_skipStateValidationCheck->isChecked());
+    settings.setValue("disablePKCE", m_disablePKCECheck->isChecked());
     settings.setValue("scopes", m_scopesEdit->text());
-    settings.setValue("responseType", m_responseTypeEdit->text());
+
+    // Save just the response type value (e.g., "code" from "code (Authorization Code Flow)")
+    QString responseType = m_responseTypeCombo->currentText().split(" ").first();
+    settings.setValue("responseType", responseType);
+
     settings.setValue("extraParams", m_extraParamsEdit->text());
 }
 

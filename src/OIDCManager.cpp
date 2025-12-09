@@ -9,12 +9,15 @@
 #include <QDateTime>
 #include <QRandomGenerator>
 #include <QCryptographicHash>
+#include <QProcess>
 
 OIDCManager::OIDCManager(QObject *parent)
     : QObject(parent)
     , m_networkManager(new QNetworkAccessManager(this))
     , m_callbackServer(new QTcpServer(this))
     , m_promptLogin(false)
+    , m_skipStateValidation(false)
+    , m_disablePKCE(false)
 {
     m_redirectURI = QString("http://localhost:%1/callback").arg(CALLBACK_PORT);
     connect(m_callbackServer, &QTcpServer::newConnection, this, &OIDCManager::onNewConnection);
@@ -35,7 +38,9 @@ void OIDCManager::startAuthentication(const QString& issuerURL,
                                      const QString& loginHint,
                                      bool promptLogin,
                                      const QString& responseType,
-                                     const QString& extraParams)
+                                     const QString& extraParams,
+                                     bool skipStateValidation,
+                                     bool disablePKCE)
 {
     m_issuerURL = issuerURL;
     m_clientID = clientID;
@@ -46,6 +51,8 @@ void OIDCManager::startAuthentication(const QString& issuerURL,
     m_promptLogin = promptLogin;
     m_responseType = responseType;
     m_extraParams = extraParams;
+    m_skipStateValidation = skipStateValidation;
+    m_disablePKCE = disablePKCE;
     
     // Generate state for CSRF protection
     m_state = QString::number(QRandomGenerator::global()->generate64(), 16);
@@ -127,13 +134,24 @@ void OIDCManager::onDiscoveryFinished()
     
     emit logMessage(QString("Starting authentication with URL: %1").arg(authURL.toString()));
     emit progressUpdated("Opening browser for authentication...");
-    
-    // Open browser
-    if (!QDesktopServices::openUrl(authURL)) {
-        emit errorOccurred("Failed to open browser.");
-        emit logMessage("Failed to open browser.");
-        return;
+
+    // Open browser in incognito mode
+    QString url = authURL.toString();
+    QProcess* browserProcess = new QProcess();
+    browserProcess->setProgram("google-chrome");
+    browserProcess->setArguments({"--incognito", url});
+
+    if (!browserProcess->startDetached()) {
+        // Fallback to default browser if Chrome fails
+        emit logMessage("Failed to launch Chrome incognito, trying default browser...");
+        if (!QDesktopServices::openUrl(authURL)) {
+            emit errorOccurred("Failed to open browser.");
+            emit logMessage("Failed to open browser.");
+            delete browserProcess;
+            return;
+        }
     }
+    delete browserProcess;
     
     emit progressUpdated("Waiting for authentication completion...");
 }
@@ -148,8 +166,18 @@ QUrl OIDCManager::buildAuthorizationURL(const QString& authEndpoint)
     query.addQueryItem("response_type", m_responseType);
     query.addQueryItem("scope", m_scopes);
     query.addQueryItem("state", m_state);
-    query.addQueryItem("code_challenge", m_codeChallenge);
-    query.addQueryItem("code_challenge_method", "S256");
+
+    // Only add PKCE for authorization code flow (unless disabled)
+    if (m_responseType.contains("code") && !m_disablePKCE) {
+        query.addQueryItem("code_challenge", m_codeChallenge);
+        query.addQueryItem("code_challenge_method", "S256");
+    }
+
+    // For implicit/hybrid flow, add nonce and use form_post
+    if (m_responseType.contains("token") || m_responseType.contains("id_token")) {
+        query.addQueryItem("nonce", m_state); // Reuse state as nonce for simplicity
+        query.addQueryItem("response_mode", "form_post");
+    }
 
     if (m_acrValue != "None" && !m_acrValue.isEmpty()) {
         // Extract ACR value from display string if needed
@@ -216,8 +244,22 @@ void OIDCManager::onReadyRead()
         return;
     }
 
+    QString method = parts[0];
     QString path = parts[1];
     QString fullURL = QString("http://localhost:%1%2").arg(CALLBACK_PORT).arg(path);
+
+    // For POST requests (form_post mode), extract form data from body
+    if (method == "POST") {
+        // Find the body (after empty line)
+        int bodyStart = request.indexOf("\r\n\r\n");
+        if (bodyStart != -1) {
+            QString body = request.mid(bodyStart + 4);
+            // Append form data as query string for uniform processing
+            if (!body.isEmpty()) {
+                fullURL += (path.contains('?') ? "&" : "?") + body;
+            }
+        }
+    }
 
     // Send HTTP response
     QString response = "HTTP/1.1 200 OK\r\n"
@@ -252,11 +294,15 @@ void OIDCManager::handleAuthCallback(const QUrl& url)
     QString error = query.queryItemValue("error");
     QString state = query.queryItemValue("state");
 
-    // Verify state
-    if (state != m_state) {
+    // Verify state (unless skipped for testing/demo)
+    if (!m_skipStateValidation && state != m_state) {
         emit errorOccurred("State mismatch - possible CSRF attack");
-        emit logMessage("State mismatch in callback");
+        emit logMessage(QString("State mismatch in callback - expected: %1, received: %2").arg(m_state, state));
         return;
+    }
+
+    if (m_skipStateValidation && state != m_state) {
+        emit logMessage(QString("⚠️ State validation skipped - expected: %1, received: %2").arg(m_state, state));
     }
 
     // Check for errors
@@ -301,13 +347,24 @@ void OIDCManager::exchangeCodeForTokens(const QString& code, const QString& toke
     postData.addQueryItem("code", code);
     postData.addQueryItem("client_id", m_clientID);
     postData.addQueryItem("redirect_uri", m_redirectURI);
-    postData.addQueryItem("code_verifier", m_codeVerifier);
+
+    // Only send code_verifier if PKCE is enabled
+    if (!m_disablePKCE) {
+        postData.addQueryItem("code_verifier", m_codeVerifier);
+    }
 
     if (!m_clientSecret.isEmpty()) {
         postData.addQueryItem("client_secret", m_clientSecret);
     }
 
     emit logMessage(QString("Exchanging authorization code at token endpoint: %1").arg(tokenEndpoint));
+    if (m_disablePKCE) {
+        emit logMessage(QString("Token exchange parameters: grant_type=authorization_code, client_id=%1, redirect_uri=%2, client_secret=%3 (PKCE disabled)")
+                       .arg(m_clientID, m_redirectURI, m_clientSecret.isEmpty() ? "(none)" : "***"));
+    } else {
+        emit logMessage(QString("Token exchange parameters: grant_type=authorization_code, client_id=%1, redirect_uri=%2, code_verifier=%3, client_secret=%4")
+                       .arg(m_clientID, m_redirectURI, m_codeVerifier, m_clientSecret.isEmpty() ? "(none)" : "***"));
+    }
 
     QNetworkReply* reply = m_networkManager->post(request, postData.toString(QUrl::FullyEncoded).toUtf8());
     connect(reply, &QNetworkReply::finished, this, &OIDCManager::onTokenExchangeFinished);
@@ -323,13 +380,15 @@ void OIDCManager::onTokenExchangeFinished()
     int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     emit logMessage(QString("Token endpoint response status: %1").arg(statusCode));
 
+    QByteArray data = reply->readAll();
+
     if (reply->error() != QNetworkReply::NoError) {
         emit errorOccurred(QString("Token exchange error: %1").arg(reply->errorString()));
         emit logMessage(QString("Token exchange error: %1").arg(reply->errorString()));
+        emit logMessage(QString("Response body: %1").arg(QString::fromUtf8(data)));
         return;
     }
 
-    QByteArray data = reply->readAll();
     QJsonDocument doc = QJsonDocument::fromJson(data);
 
     if (doc.isNull() || !doc.isObject()) {

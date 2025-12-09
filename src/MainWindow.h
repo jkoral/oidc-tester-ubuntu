@@ -48,8 +48,10 @@ private:
     QComboBox* m_acrValueCombo;
     QLineEdit* m_loginHintEdit;
     QCheckBox* m_promptLoginCheck;
+    QCheckBox* m_skipStateValidationCheck;
+    QCheckBox* m_disablePKCECheck;
     QLineEdit* m_scopesEdit;
-    QLineEdit* m_responseTypeEdit;
+    QComboBox* m_responseTypeCombo;
     QLineEdit* m_extraParamsEdit;
     QLabel* m_redirectURILabel;
     QPushButton* m_beginAuthButton;
